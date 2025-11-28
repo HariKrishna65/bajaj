@@ -3,7 +3,7 @@ from typing import List, Tuple, Union
 from pathlib import Path
 import httpx
 from PIL import Image
-import fitz  # PyMuPDF
+from pdf2image import convert_from_bytes
 import mimetypes
 
 
@@ -71,16 +71,8 @@ async def get_document_content(source: Union[str, bytes, Path]) -> Tuple[bytes, 
 
 
 def pdf_to_images(pdf_bytes: bytes) -> List[Image.Image]:
-    """Convert PDF bytes to list of PIL Images using PyMuPDF"""
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    images = []
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better quality
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        images.append(img)
-    doc.close()
-    return images
+    """Convert PDF bytes to list of PIL Images using pdf2image"""
+    return convert_from_bytes(pdf_bytes, dpi=200)
 
 
 def read_image(image_bytes: bytes) -> Image.Image:
