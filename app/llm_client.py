@@ -8,6 +8,70 @@ from typing import Tuple, Dict, Any, Union
 def get_api_key():
     return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
+
+def enforce_extraction_constraints(page_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Enforce the extraction constraints on the page data:
+    1. If item_rate is not present, set item_rate = 0.0
+    2. If item_quantity is not present, set item_quantity = 0.0
+    3. Item amount must be exactly as extracted (no rounding)
+    4. page_type must be exactly one of: Bill Detail, Final Bill, Pharmacy
+    """
+    # Validate and fix page_type
+    valid_page_types = ["Bill Detail", "Final Bill", "Pharmacy"]
+    if "page_type" not in page_data or page_data["page_type"] not in valid_page_types:
+        # Try to match case-insensitively or set default
+        page_type = page_data.get("page_type", "").strip()
+        matched = False
+        for valid_type in valid_page_types:
+            if page_type.lower() == valid_type.lower():
+                page_data["page_type"] = valid_type
+                matched = True
+                break
+        if not matched:
+            # Default to "Bill Detail" if can't determine
+            page_data["page_type"] = "Bill Detail"
+    
+    # Validate and fix bill_items
+    if "bill_items" not in page_data:
+        page_data["bill_items"] = []
+    
+    for item in page_data["bill_items"]:
+        # Rule 1: If item_rate is not present, set item_rate = 0.0
+        if "item_rate" not in item or item["item_rate"] is None:
+            item["item_rate"] = 0.0
+        else:
+            # Ensure it's a float
+            try:
+                item["item_rate"] = float(item["item_rate"])
+            except (ValueError, TypeError):
+                item["item_rate"] = 0.0
+        
+        # Rule 2: If item_quantity is not present, set item_quantity = 0.0
+        if "item_quantity" not in item or item["item_quantity"] is None:
+            item["item_quantity"] = 0.0
+        else:
+            # Ensure it's a float
+            try:
+                item["item_quantity"] = float(item["item_quantity"])
+            except (ValueError, TypeError):
+                item["item_quantity"] = 0.0
+        
+        # Rule 3: Item amount must be exact (no rounding)
+        if "item_amount" in item and item["item_amount"] is not None:
+            try:
+                # Preserve as float, don't round
+                item["item_amount"] = float(item["item_amount"])
+            except (ValueError, TypeError):
+                # If invalid, set to 0.0
+                item["item_amount"] = 0.0
+        
+        # Ensure item_name exists
+        if "item_name" not in item:
+            item["item_name"] = ""
+    
+    return page_data
+
 SYSTEM_PROMPT = """
 You are an expert medical bill analyzer.
 
@@ -28,18 +92,24 @@ Return ONLY this JSON structure:
   ]
 }
 
-STRICT RULES:
-1. Do NOT include: subtotal, total, tax, discount, headers, notes
-2. item_name: EXACT text from document
-3. item_quantity: EXACT value, or 1 if missing
-4. item_rate: EXACT rate from document
-5. item_amount: EXACT final line amount
-6. page_type MUST BE:
-   - Pharmacy → for medicines
-   - Bill Detail → hospital/services/tests
-   - Final Bill → summary page
-7. If no items exist, return empty array
-8. ONLY JSON OUTPUT, no explanation
+IMPORTANT RULES (MANDATORY):
+1. If item_rate is not present, set item_rate = 0.0
+2. If item_quantity is not present, set item_quantity = 0.0
+3. Item amount needs to be exactly extracted as present in the document. NO rounding off allowed.
+4. page_type must always be exactly one of: Bill Detail, Final Bill, Pharmacy
+
+ADDITIONAL RULES:
+- Do NOT include: subtotal, total, tax, discount, headers, notes
+- item_name: EXACT text from document
+- item_amount: EXACT value from document, preserve all decimal places
+- If no items exist, return empty array
+- ONLY JSON OUTPUT, no explanation
+
+VALIDATION:
+- page_type must be EXACTLY "Bill Detail" OR "Final Bill" OR "Pharmacy" (case-sensitive)
+- item_rate: Use 0.0 if not present, otherwise exact value
+- item_quantity: Use 0.0 if not present, otherwise exact value
+- item_amount: Exact value from document, no rounding, no approximation
 """
 
 
@@ -131,6 +201,9 @@ def extract_page_items_with_llm(
                         
                         page_data = json.loads(raw_text)
                         page_data["page_no"] = str(page_no)
+                        
+                        # Enforce constraints on the extracted data
+                        page_data = enforce_extraction_constraints(page_data)
                         
                         # Extract usage info if available
                         usage_info = result.get('usageMetadata', {})
