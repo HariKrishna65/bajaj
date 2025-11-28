@@ -11,9 +11,10 @@ def get_api_key():
 
 def enforce_extraction_constraints(page_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Enforce the extraction constraints on the page data:
-    1. If item_rate is not present, set item_rate = 0.0
-    2. If item_quantity is not present, set item_quantity = 0.0
+    Enforce the extraction constraints on the page data (Hybrid approach):
+    - Preserves extracted values (even if 0.0) - only defaults if truly missing
+    1. If item_rate is not present/None, set item_rate = 0.0 (preserve extracted values)
+    2. If item_quantity is not present/None, set item_quantity = 0.0 (preserve extracted values)
     3. Item amount must be exactly as extracted (no rounding)
     4. page_type must be exactly one of: Bill Detail, Final Bill, Pharmacy
     """
@@ -37,24 +38,34 @@ def enforce_extraction_constraints(page_data: Dict[str, Any]) -> Dict[str, Any]:
         page_data["bill_items"] = []
     
     for item in page_data["bill_items"]:
-        # Rule 1: If item_rate is not present, set item_rate = 0.0
-        if "item_rate" not in item or item["item_rate"] is None:
+        # Rule 1: If item_rate is not present OR is None/empty, set item_rate = 0.0
+        # Only default if truly missing - preserve extracted values including 0
+        if "item_rate" not in item:
+            item["item_rate"] = 0.0
+        elif item["item_rate"] is None:
             item["item_rate"] = 0.0
         else:
-            # Ensure it's a float
+            # Ensure it's a float - preserve the extracted value
             try:
                 item["item_rate"] = float(item["item_rate"])
+                # If it's a valid number (even 0.0), keep it
             except (ValueError, TypeError):
+                # Only set to 0.0 if conversion fails (invalid value)
                 item["item_rate"] = 0.0
         
-        # Rule 2: If item_quantity is not present, set item_quantity = 0.0
-        if "item_quantity" not in item or item["item_quantity"] is None:
+        # Rule 2: If item_quantity is not present OR is None/empty, set item_quantity = 0.0
+        # Only default if truly missing - preserve extracted values including 0
+        if "item_quantity" not in item:
+            item["item_quantity"] = 0.0
+        elif item["item_quantity"] is None:
             item["item_quantity"] = 0.0
         else:
-            # Ensure it's a float
+            # Ensure it's a float - preserve the extracted value
             try:
                 item["item_quantity"] = float(item["item_quantity"])
+                # If it's a valid number (even 0.0), keep it
             except (ValueError, TypeError):
+                # Only set to 0.0 if conversion fails (invalid value)
                 item["item_quantity"] = 0.0
         
         # Rule 3: Item amount must be exact (no rounding)
@@ -73,9 +84,27 @@ def enforce_extraction_constraints(page_data: Dict[str, Any]) -> Dict[str, Any]:
     return page_data
 
 SYSTEM_PROMPT = """
-You are an expert medical bill analyzer.
+You are an expert medical bill analyzer. Your task is to carefully examine the bill and extract ALL available information.
 
-Extract ONLY the line items from the bill image.
+EXTRACTION PROCESS - FOLLOW THESE STEPS:
+
+STEP 1: CAREFULLY SEARCH THE DOCUMENT
+- Examine the entire bill image/document thoroughly
+- Look for ALL columns in the bill table (Item Name, Quantity, Rate, Amount, etc.)
+- Check headers, rows, and all visible text
+- Pay attention to different column layouts and formats
+
+STEP 2: EXTRACT VALUES ACCURATELY
+- For EACH line item, extract:
+  * item_name: EXACT text from the document
+  * item_quantity: Look for "Qty", "Quantity", "Qty.", "QTY" columns - extract the EXACT number if present
+  * item_rate: Look for "Rate", "Price", "Unit Price", "Cost" columns - extract the EXACT number if present
+  * item_amount: Look for "Amount", "Total", "Line Total" columns - extract the EXACT number (preserve all decimals, NO rounding)
+
+STEP 3: DEFAULT VALUES ONLY WHEN ABSOLUTELY CERTAIN
+- Use 0.0 ONLY if you are 100% certain the column/value does NOT exist in the document
+- If you see a column header but no value for that item, still check if it might be empty/null in the source - only then use 0.0
+- If the column format is unclear or you're uncertain, try your best to extract what's visible
 
 Return ONLY this JSON structure:
 
@@ -92,24 +121,23 @@ Return ONLY this JSON structure:
   ]
 }
 
-IMPORTANT RULES (MANDATORY):
-1. If item_rate is not present, set item_rate = 0.0
-2. If item_quantity is not present, set item_quantity = 0.0
-3. Item amount needs to be exactly extracted as present in the document. NO rounding off allowed.
-4. page_type must always be exactly one of: Bill Detail, Final Bill, Pharmacy
+MANDATORY RULES:
+1. SEARCH CAREFULLY FIRST: Look for quantity/rate columns in the document. Only set to 0.0 if 100% sure it's not there.
+2. EXACT EXTRACTION: Extract values exactly as shown - no rounding, no approximation for item_amount
+3. page_type must be EXACTLY one of: "Bill Detail", "Final Bill", "Pharmacy"
+4. If item_rate column exists but value is missing/empty for an item → 0.0
+5. If item_quantity column exists but value is missing/empty for an item → 0.0
+6. If the entire column doesn't exist in document → 0.0
 
-ADDITIONAL RULES:
+WHAT TO EXCLUDE:
 - Do NOT include: subtotal, total, tax, discount, headers, notes
-- item_name: EXACT text from document
-- item_amount: EXACT value from document, preserve all decimal places
-- If no items exist, return empty array
-- ONLY JSON OUTPUT, no explanation
+- Only extract actual line items (individual products/services)
 
-VALIDATION:
-- page_type must be EXACTLY "Bill Detail" OR "Final Bill" OR "Pharmacy" (case-sensitive)
-- item_rate: Use 0.0 if not present, otherwise exact value
-- item_quantity: Use 0.0 if not present, otherwise exact value
-- item_amount: Exact value from document, no rounding, no approximation
+IMPORTANT:
+- Prioritize ACCURACY over speed
+- Check the document structure carefully before deciding if a value is missing
+- Preserve all decimal places in item_amount
+- ONLY JSON OUTPUT, no explanation
 """
 
 
