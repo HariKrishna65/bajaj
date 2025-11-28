@@ -4,7 +4,8 @@ import json
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-model = genai.GenerativeModel("gemini-1.5-flash")
+# USE THIS MODEL (compatible with version 0.3.2)
+model = genai.GenerativeModel("models/gemini-pro-vision")
 
 SYSTEM_PROMPT = """
 You are an expert bill analyzer.
@@ -28,14 +29,11 @@ Return ONLY valid JSON in this exact format:
 }
 
 RULES:
-- Do NOT include: subtotal, total, tax, discount, notes, headers
-- item_name must match the bill text exactly
-- If item_quantity is missing, use 1
-- page_type MUST be ONLY one of:
-     "Bill Detail"
-     "Final Bill"
-     "Pharmacy"
-- Output ONLY pure JSON (no explanation)
+- Do NOT include total, subtotal, tax, discount
+- item_quantity if missing use 1
+- page_type must be ONLY:
+  Bill Detail, Final Bill, Pharmacy
+- Output ONLY pure JSON
 """
 
 def extract_page_items_with_llm(document_url: str, page_no: str):
@@ -47,7 +45,7 @@ def extract_page_items_with_llm(document_url: str, page_no: str):
 
     raw_text = response.text.strip()
 
-    # Clean up if Gemini adds ```json
+    # Cleanup any code fences
     if raw_text.startswith("```"):
         raw_text = raw_text.replace("```json", "").replace("```", "").strip()
 
