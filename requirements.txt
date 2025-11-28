@@ -1,9 +1,7 @@
 fastapi
 uvicorn
 httpx
-pydantic==1.10.15
-Pillow==9.5.0
-pdf2image
-google-generativeai==0.3.2
+pydantic
+google-generativeai
 python-dotenv
 requests
