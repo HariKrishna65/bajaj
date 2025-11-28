@@ -1,19 +1,19 @@
-import google.generativeai as genai
-import os
 import json
+import os
+import base64
+import httpx
+from typing import Tuple, Dict, Any, Union
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
-# USE THIS MODEL (compatible with version 0.3.2)
-model = genai.GenerativeModel("models/gemini-pro-vision")
+# Read GEMINI key from environment
+def get_api_key():
+    return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 SYSTEM_PROMPT = """
-You are an expert bill analyzer.
+You are an expert medical bill analyzer.
 
-The input is a PUBLIC URL to a bill image or PDF.
-Read the document and extract ONLY LINE ITEMS.
+Extract ONLY the line items from the bill image.
 
-Return ONLY valid JSON in this exact format:
+Return ONLY this JSON structure:
 
 {
   "page_no": "string",
@@ -28,34 +28,131 @@ Return ONLY valid JSON in this exact format:
   ]
 }
 
-RULES:
-- Do NOT include total, subtotal, tax, discount
-- item_quantity if missing use 1
-- page_type must be ONLY:
-  Bill Detail, Final Bill, Pharmacy
-- Output ONLY pure JSON
+STRICT RULES:
+1. Do NOT include: subtotal, total, tax, discount, headers, notes
+2. item_name: EXACT text from document
+3. item_quantity: EXACT value, or 1 if missing
+4. item_rate: EXACT rate from document
+5. item_amount: EXACT final line amount
+6. page_type MUST BE:
+   - Pharmacy → for medicines
+   - Bill Detail → hospital/services/tests
+   - Final Bill → summary page
+7. If no items exist, return empty array
+8. ONLY JSON OUTPUT, no explanation
 """
 
-def extract_page_items_with_llm(document_url: str, page_no: str):
 
-    response = model.generate_content([
-        SYSTEM_PROMPT,
-        f"Extract line items from this document URL: {document_url}"
-    ])
-
-    raw_text = response.text.strip()
-
-    # Cleanup any code fences
-    if raw_text.startswith("```"):
-        raw_text = raw_text.replace("```json", "").replace("```", "").strip()
-
-    page_data = json.loads(raw_text)
-    page_data["page_no"] = page_no
-
-    usage = {
-        "total_tokens": 0,
-        "input_tokens": 0,
-        "output_tokens": 0
-    }
-
-    return page_data, usage
+def extract_page_items_with_llm(
+    input_data: Union[str, bytes],
+    page_no: Union[str, int],
+    mime: str = "image/png"
+) -> Tuple[Dict[str, Any], Dict[str, int]]:
+    """
+    Extract bill items using Gemini AI.
+    
+    Args:
+        input_data: Can be either:
+            - URL string (str) - URL to PDF/image
+            - Image bytes (bytes) - Direct image data
+        page_no: Page number (str or int)
+        mime: MIME type (default: "image/png")
+    
+    Returns:
+        Tuple of (page_data dict, usage dict)
+    """
+    api_key = get_api_key()
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY environment variable is not set")
+    
+    # Try different model names via REST API
+    api_version = "v1beta"
+    model_names = [
+        "gemini-2.0-flash",      # Fast and efficient
+        "gemini-2.5-flash",      # Latest flash model
+        "gemini-flash-latest",   # Auto-updates to latest
+    ]
+    
+    url_template = f"https://generativelanguage.googleapis.com/{api_version}/models/{{model}}:generateContent?key={{key}}"
+    
+    # Prepare payload based on input type
+    if isinstance(input_data, str):
+        # URL input - Gemini can fetch from URLs
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": SYSTEM_PROMPT},
+                    {"text": f"Extract line items from this document URL: {input_data}"}
+                ]
+            }],
+            "generationConfig": {
+                "temperature": 0.1,
+                "response_mime_type": "application/json"
+            }
+        }
+    else:
+        # Image bytes input
+        image_base64 = base64.b64encode(input_data).decode('utf-8')
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": SYSTEM_PROMPT},
+                    {
+                        "inline_data": {
+                            "mime_type": mime,
+                            "data": image_base64
+                        }
+                    }
+                ]
+            }],
+            "generationConfig": {
+                "temperature": 0.1,
+                "response_mime_type": "application/json"
+            }
+        }
+    
+    # Try each model until one works
+    last_error = None
+    for model_name in model_names:
+        try:
+            url = url_template.format(model=model_name, key=api_key)
+            with httpx.Client(timeout=60.0) as client:
+                response = client.post(url, json=payload)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if 'candidates' in result and len(result['candidates']) > 0:
+                        content = result['candidates'][0]['content']['parts'][0]['text']
+                        
+                        # Cleanup formatting if Gemini adds code blocks
+                        raw_text = content.strip()
+                        if raw_text.startswith("```"):
+                            raw_text = raw_text.replace("```json", "").replace("```", "").strip()
+                        
+                        page_data = json.loads(raw_text)
+                        page_data["page_no"] = str(page_no)
+                        
+                        # Extract usage info if available
+                        usage_info = result.get('usageMetadata', {})
+                        usage = {
+                            "total_tokens": usage_info.get('totalTokenCount', 0),
+                            "input_tokens": usage_info.get('promptTokenCount', 0),
+                            "output_tokens": usage_info.get('candidatesTokenCount', 0)
+                        }
+                        
+                        return page_data, usage
+                elif response.status_code == 404:
+                    # Model not found, try next one
+                    continue
+                else:
+                    error_text = response.text[:300] if hasattr(response, 'text') else str(response.content[:300])
+                    last_error = f"{model_name}: API error ({response.status_code}) - {error_text}"
+                    continue
+        except json.JSONDecodeError as e:
+            last_error = f"{model_name}: JSON decode error - {str(e)}"
+            continue
+        except Exception as e:
+            last_error = f"{model_name}: Exception - {str(e)[:200]}"
+            continue
+    
+    raise ValueError(f"Could not process with any model. Last error: {last_error}")
