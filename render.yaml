@@ -1,12 +1,10 @@
 services:
   - type: web
-    name: bill-extraction-api
+    name: hackrx-bill-extractor
     env: python
-    plan: free
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    runtime: python;version=3.10.13
     envVars:
       - key: GEMINI_API_KEY
         sync: false
-      - key: PYTHON_VERSION
-        value: 3.11.0
