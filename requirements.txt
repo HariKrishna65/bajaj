@@ -6,3 +6,5 @@ google-generativeai
 python-dotenv
 requests
 python-multipart
+pdf2image
+pillow
