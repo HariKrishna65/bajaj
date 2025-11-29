@@ -1,6 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 from typing import Optional
+from pydantic import BaseModel
 
 from app.schemas import (
     RequestBody,
@@ -18,24 +19,37 @@ from app.llm_client import extract_page_items_with_llm
 app = FastAPI(title="HackRx Bill Extraction API")
 
 
-@app.post("/extract-bill-data", response_model=SuccessResponse)
-async def extract_bill_data(
-    document_url: Optional[str] = Form(None, description="URL to PDF or image (http/https)"),
-    document_file: Optional[UploadFile] = File(None, description="Upload PDF or image file directly")
+class URLRequest(BaseModel):
+    """Request model for JSON body with URL"""
+    document_url: str
+
+
+@app.get("/")
+async def root():
+    """Health check endpoint - use this to verify API is running"""
+    return {
+        "status": "ok",
+        "message": "Bill Extraction API is running",
+        "endpoints": {
+            "extract_bill_data": "POST /extract-bill-data (Form-data)",
+            "extract_bill_data_json": "POST /extract-bill-data-json (JSON body)",
+            "health": "GET /health",
+            "docs": "GET /docs"
+        }
+    }
+
+
+@app.get("/health")
+async def health():
+    """Health check endpoint for monitoring"""
+    return {"status": "healthy", "service": "Bill Extraction API"}
+
+
+async def extract_bill_data_internal(
+    document_url: Optional[str] = None,
+    document_file: Optional[UploadFile] = None
 ):
-    """
-    Extract bill data from PDF or image.
-    
-    Accepts either:
-    - document_url: URL to PDF or image file (e.g., https://example.com/bill.pdf)
-    - document_file: Upload PDF or image file directly
-    
-    Supports:
-    - PDF URLs (http/https)
-    - Image URLs (http/https) 
-    - Local PDF file uploads
-    - Local image file uploads (jpg, png, etc.)
-    """
+    """Internal function that handles the actual extraction logic"""
     try:
         print("=" * 80)
         print("[REQUEST RECEIVED] New bill extraction request received")
@@ -184,3 +198,44 @@ async def extract_bill_data(
             status_code=500,
             content=ErrorResponse(is_success=False, message=str(e)).dict()
         )
+
+
+@app.post("/extract-bill-data-json", response_model=SuccessResponse)
+async def extract_bill_data_json(request: URLRequest):
+    """
+    Extract bill data from PDF or image URL using JSON body.
+    
+    **Example with curl:**
+    ```bash
+    curl -X POST http://localhost:8000/extract-bill-data-json \
+      -H "Content-Type: application/json" \
+      -d '{"document_url": "https://example.com/bill.pdf"}'
+    ```
+    """
+    return await extract_bill_data_internal(document_url=request.document_url, document_file=None)
+
+
+@app.post("/extract-bill-data", response_model=SuccessResponse)
+async def extract_bill_data(
+    document_url: Optional[str] = Form(None, description="URL to PDF or image (http/https)"),
+    document_file: Optional[UploadFile] = File(None, description="Upload PDF or image file directly")
+):
+    """
+    Extract bill data from PDF or image (Form-data).
+    
+    **For URL input:**
+    ```bash
+    curl -X POST http://localhost:8000/extract-bill-data \
+      -F "document_url=https://example.com/bill.pdf"
+    ```
+    
+    **For file upload:**
+    ```bash
+    curl -X POST http://localhost:8000/extract-bill-data \
+      -F "document_file=@bill.pdf"
+    ```
+    
+    **For JSON body (alternative):**
+    Use `/extract-bill-data-json` endpoint instead.
+    """
+    return await extract_bill_data_internal(document_url=document_url, document_file=document_file)
