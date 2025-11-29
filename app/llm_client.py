@@ -13,7 +13,7 @@ def get_api_key():
 
 
 # -------------------------------------------------------
-# Enforce data extraction constraints
+# Enforce extraction constraints
 # -------------------------------------------------------
 def enforce_extraction_constraints(page_data: Dict[str, Any]) -> Dict[str, Any]:
     valid_page_types = ["Bill Detail", "Final Bill", "Pharmacy"]
@@ -50,7 +50,7 @@ def enforce_extraction_constraints(page_data: Dict[str, Any]) -> Dict[str, Any]:
         except:
             item["item_quantity"] = 0.0
 
-        # item_amount (exact float)
+        # item_amount
         try:
             item["item_amount"] = float(item.get("item_amount", 0.0))
         except:
@@ -63,11 +63,8 @@ def enforce_extraction_constraints(page_data: Dict[str, Any]) -> Dict[str, Any]:
 # SYSTEM PROMPT
 # -------------------------------------------------------
 SYSTEM_PROMPT = """
-Extract bill line items EXACTLY as required.
+Extract bill line items EXACTLY in JSON format.
 
-Output ONLY JSON, no explanation.
-
-JSON FORMAT:
 {
   "page_no": "string",
   "page_type": "Bill Detail | Final Bill | Pharmacy",
@@ -81,12 +78,10 @@ JSON FORMAT:
   ]
 }
 
-RULES:
-- No totals, tax, discounts.
-- Only extract line items.
+Rules:
+- Only extract line items (no totals/taxes).
 - No rounding item_amount.
-- If Qty/Rate missing -> 0.0
-- page_type must exactly match.
+- If qty/rate missing then 0.0.
 """
 
 
@@ -96,25 +91,30 @@ RULES:
 def extract_page_items_with_llm(
     input_data: Union[str, bytes],
     page_no: Union[str, int],
-    mime: str = "image/png"
+    mime: str = "image/jpeg"
 ) -> Tuple[Dict[str, Any], Dict[str, int]]:
 
     api_key = get_api_key()
     if not api_key:
         raise ValueError("Missing GEMINI_API_KEY or GOOGLE_API_KEY")
 
-    model = "gemini-flash-latest"
+    # -------------------------------------------------------
+    # ✔ UPDATED FASTER MODEL
+    # -------------------------------------------------------
+    model = "gemini-2.0-flash-lite"        # ← FASTEST MODEL
     api_version = "v1beta"
 
     url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model}:generateContent?key={api_key}"
 
-    # ------------------------ Prepare Payload -----------------------
+    # -------------------------------------------------------
+    # Prepare payload
+    # -------------------------------------------------------
     if isinstance(input_data, str):
         payload = {
             "contents": [{
                 "parts": [
                     {"text": SYSTEM_PROMPT},
-                    {"text": f"Extract from this URL: {input_data}"}
+                    {"text": f"Extract from URL: {input_data}"}
                 ]
             }],
             "generationConfig": {
@@ -139,7 +139,9 @@ def extract_page_items_with_llm(
 
     print(f"[GEMINI] Calling {model} for page {page_no}...")
 
-    # ------------------------ API Call -----------------------
+    # -------------------------------------------------------
+    # Call Gemini API
+    # -------------------------------------------------------
     try:
         with httpx.Client(timeout=120.0) as client:
             response = client.post(url, json=payload)
@@ -148,49 +150,33 @@ def extract_page_items_with_llm(
             raise ValueError(f"Gemini error {response.status_code}: {response.text[:200]}")
 
         result = response.json()
-
         candidates = result.get("candidates", [])
         if not candidates:
             raise ValueError("Gemini returned no candidates")
 
         parts = candidates[0].get("content", {}).get("parts", [])
         if not parts:
-            raise ValueError("Gemini returned empty content parts")
+            raise ValueError("Gemini returned empty parts")
 
         text = parts[0].get("text", "").strip()
-        if not text:
-            raise ValueError("Gemini returned blank text")
 
-        # Remove code blocks
         if text.startswith("```"):
             text = text.replace("```json", "").replace("```", "").strip()
 
-        # ------------------------ JSON Parsing -----------------------
+        # Parse JSON
         try:
             parsed = json.loads(text)
         except Exception as err:
-            print("\n----- RAW GEMINI OUTPUT START -----")
-            print(text)
-            print("----- RAW GEMINI OUTPUT END -----\n")
+            print("RAW GEMINI OUTPUT →", text)
             raise ValueError(f"Invalid JSON from Gemini: {err}")
 
-        # ---------------------- Auto-fix Bad Structures ----------------------
-        # Case 1: Gemini returned a list instead of dict
+        # Auto-fix list output
         if isinstance(parsed, list):
             parsed = {
                 "page_no": str(page_no),
                 "page_type": "Bill Detail",
                 "bill_items": parsed
             }
-
-        # Case 2: Missing bill_items but data present under "items" or "lines"
-        if isinstance(parsed, dict) and "bill_items" not in parsed:
-            if "items" in parsed and isinstance(parsed["items"], list):
-                parsed["bill_items"] = parsed["items"]
-            elif "lines" in parsed and isinstance(parsed["lines"], list):
-                parsed["bill_items"] = parsed["lines"]
-            else:
-                parsed.setdefault("bill_items", [])
 
         parsed["page_no"] = str(page_no)
         page_data = parsed
@@ -199,7 +185,6 @@ def extract_page_items_with_llm(
         print("[GEMINI] Applying constraints...")
         page_data = enforce_extraction_constraints(page_data)
 
-        # Token usage extraction
         usage_info = result.get("usageMetadata", {})
         usage = {
             "total_tokens": usage_info.get("totalTokenCount", 0),
@@ -207,15 +192,13 @@ def extract_page_items_with_llm(
             "output_tokens": usage_info.get("candidatesTokenCount", 0),
         }
 
-        print(f"[GEMINI] ✓ Success page {page_no} (tokens: {usage['total_tokens']})")
+        print(f"[GEMINI] ✓ Success page {page_no} (tokens={usage['total_tokens']})")
         return page_data, usage
 
-
-    # ---------------------- ERROR SAFE FALLBACK ----------------------
     except Exception as e:
         print(f"[GEMINI] ERROR on page {page_no}: {e}")
 
-        # Return safe blank structure (prevents 502 crash)
+        # Safe fallback (prevents crashes)
         return {
             "page_no": str(page_no),
             "page_type": "Bill Detail",
