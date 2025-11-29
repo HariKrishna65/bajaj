@@ -1,55 +1,48 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-
-from app.schemas import (
-    SuccessResponse,
-    ErrorResponse,
-    TokenUsage,
-    DataPayload,
-    PageLineItems,
-    BillItem,
-)
-
+from app.schemas import SuccessResponse, ErrorResponse, TokenUsage, DataPayload, PageLineItems, BillItem
 from app.ocr_pipeline import prepare_pages
 from app.llm_client import extract_page_items_with_llm
 
-
-# Request model (Hackathon format)
-class UrlRequest(BaseModel):
-    document: str
-
-
 app = FastAPI(
-    title="HackRx Bill Extraction API",
+    title="Bill Extraction API",
     docs_url=None,
     redoc_url=None,
     openapi_url=None
 )
 
-
 @app.post("/extract-bill-data", response_model=SuccessResponse)
-async def extract_bill_data(request: UrlRequest):
+async def extract_bill_data(payload: dict):
     """
-    HackRx-required API:
-    Accepts JSON:
+    HackRx format:
+    POST /extract-bill-data
+    Content-Type: application/json
+
     {
-        "document": "<PDF or Image URL>"
+        "document": "https://example.com/file.pdf"
     }
     """
     try:
-        document_url = request.document
+        if "document" not in payload:
+            return JSONResponse(
+                status_code=400,
+                content=ErrorResponse(
+                    is_success=False,
+                    message="Missing required field: document"
+                ).dict()
+            )
 
-        # Download and convert PDF/Image
+        document_url = payload["document"].strip()
+        print(f"[REQUEST] URL = {document_url}")
+
+        # Convert PDF/image URL → Pages
         pages = await prepare_pages(document_url)
 
         pagewise_line_items = []
         total_tokens = input_tokens = output_tokens = 0
 
         for page_no, (img_bytes, mime) in pages:
-            extracted, usage = extract_page_items_with_llm(
-                img_bytes, page_no, mime
-            )
+            extracted, usage = extract_page_items_with_llm(img_bytes, page_no, mime)
 
             items = [
                 BillItem(
@@ -87,6 +80,7 @@ async def extract_bill_data(request: UrlRequest):
         )
 
     except Exception as e:
+        print("[ERROR]", e)
         return JSONResponse(
             status_code=500,
             content=ErrorResponse(
