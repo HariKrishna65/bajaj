@@ -404,18 +404,18 @@ async def extract_bill_data_internal(
         print(f"[PROCESSING] Starting extraction for {len(pages)} page(s)...")
         for idx, (page_no, page_data) in enumerate(pages, 1):
             print(f"[PAGE {idx}/{len(pages)}] Processing page {page_no}...")
-            # page_data can be either URL (str) or image_bytes (bytes)
-            # For URLs, page_data is a string. For file uploads, it's (image_bytes, mime) tuple
+            # page_data is always (image_bytes, mime) tuple for both URLs and file uploads
+            # URLs are now downloaded and processed the same way as file uploads
             if isinstance(page_data, tuple):
-                # File upload: (image_bytes, mime)
+                # Both URLs and file uploads: (image_bytes, mime)
                 image_bytes, mime = page_data
                 print(f"[PAGE {idx}/{len(pages)}] Sending image bytes ({len(image_bytes)} bytes) to Gemini AI...")
                 page_extracted, usage = extract_page_items_with_llm(
                     image_bytes, page_no, mime
                 )
             else:
-                # URL: page_data is a string
-                print(f"[PAGE {idx}/{len(pages)}] Sending URL to Gemini AI...")
+                # Fallback: if somehow we get a string (shouldn't happen now)
+                print(f"[PAGE {idx}/{len(pages)}] WARNING: Unexpected data type, treating as URL string...")
                 page_extracted, usage = extract_page_items_with_llm(
                     page_data, page_no
                 )
