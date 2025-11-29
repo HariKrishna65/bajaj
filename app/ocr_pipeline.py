@@ -1,11 +1,10 @@
+import io
 import httpx
 from pdf2image import convert_from_bytes
-import io
 
 
-async def download_file(url: str) -> bytes:
-    print("[URL DOWNLOAD] Fetching:", url)
-
+async def download_document(url: str) -> bytes:
+    print(f"[DOWNLOAD] {url}")
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.get(url)
         r.raise_for_status()
@@ -13,22 +12,21 @@ async def download_file(url: str) -> bytes:
 
 
 async def prepare_pages(url: str):
-    pdf_bytes = await download_file(url)
+    file_bytes = await download_document(url)
 
-    print("[PDF] Converting PDF → PNG (DPI=200)")
+    print("[PDF] Converting PDF → PNG @ 200 DPI")
 
-    images = convert_from_bytes(
-        pdf_bytes,
-        dpi=200,
+    pages = convert_from_bytes(
+        file_bytes,
         fmt="png",
-        thread_count=1
+        dpi=200
     )
 
-    pages = []
-    for i, img in enumerate(images, 1):
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-        pages.append((i, buffer.getvalue(), "image/png"))
+    output = []
+    for idx, page in enumerate(pages, start=1):
+        buf = io.BytesIO()
+        page.save(buf, format="PNG")
+        output.append((idx, buf.getvalue()))
 
-    print(f"[PAGES] Prepared {len(pages)} pages")
-    return pages
+    print(f"[PAGES] Ready: {len(output)} pages")
+    return output
