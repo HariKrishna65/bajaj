@@ -10,8 +10,32 @@ def get_api_key():
 
 
 SYSTEM_PROMPT = """
-You are an expert medical bill analyzer...
-(KEEP YOUR SAME PROMPT HERE)
+Extract bill line items EXACTLY as required.
+
+Output ONLY JSON. No explanation. No markdown. No extra text.
+
+REQUIRED JSON FORMAT:
+{
+  "page_no": "string",
+  "page_type": "Bill Detail | Final Bill | Pharmacy",
+  "bill_items": [
+    {
+      "item_name": "string",
+      "item_amount": float,
+      "item_rate": float,
+      "item_quantity": float
+    }
+  ]
+}
+
+STRICT EXTRACTION RULES:
+- Extract ONLY true bill line items.
+- DO NOT extract totals, subtotals, tax, discounts, footer notes, headers.
+- item_amount must be EXACT, with NO rounding.
+- If Qty or Rate is missing or blank → use 0.0.
+- page_type MUST be exactly one of:
+    "Bill Detail", "Final Bill", "Pharmacy"
+- If the page has NO bill items → return bill_items as an empty list [].
 """
 
 
@@ -51,7 +75,10 @@ def extract_page_items_with_llm(
                 {"inline_data": {"mime_type": mime, "data": img64}}
             ]
         }],
-        "generationConfig": {"temperature": 0.1, "response_mime_type": "application/json"}
+        "generationConfig": {
+            "temperature": 0.1,
+            "response_mime_type": "application/json"
+        }
     }
 
     print(f"[GEMINI] Calling gemini-flash-latest for page {page_no}...")
@@ -70,7 +97,7 @@ def extract_page_items_with_llm(
 
     data = json.loads(txt)
 
-    # Auto-wrap if list
+    # Auto-wrap if Gemini returns list instead of dict
     if isinstance(data, list):
         data = {"page_type": "Bill Detail", "bill_items": data}
 
