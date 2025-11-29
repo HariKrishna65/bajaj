@@ -25,7 +25,7 @@ class URLRequest(BaseModel):
 
 
 @app.get("/", response_class=HTMLResponse)
-async def root():
+async def root_get():
     """Interactive form interface for bill extraction"""
     html_content = """
 <!DOCTYPE html>
@@ -208,7 +208,7 @@ async def root():
             <strong>Content-Type:</strong> multipart/form-data
         </div>
         
-        <form id="extractForm" enctype="multipart/form-data">
+        <form id="extractForm" action="/extract-bill-data" method="POST" enctype="multipart/form-data">
             <div class="form-group">
                 <label for="document_url">document_url</label>
                 <div class="description">URL to PDF or image (http/https)</div>
@@ -317,6 +317,24 @@ async def root():
 </html>
     """
     return HTMLResponse(content=html_content)
+
+
+@app.post("/")
+async def root_post():
+    """Handle POST requests to root - redirect to proper endpoint"""
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "Method not allowed",
+            "message": "Please use POST /extract-bill-data endpoint or use the form interface at GET /",
+            "endpoints": {
+                "form_interface": "GET /",
+                "extract_with_form": "POST /extract-bill-data",
+                "extract_with_json": "POST /extract-bill-data-json",
+                "docs": "GET /docs"
+            }
+        }
+    )
 
 
 @app.get("/health")
