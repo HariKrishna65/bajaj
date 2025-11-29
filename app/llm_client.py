@@ -4,13 +4,12 @@ import base64
 import httpx
 from typing import Dict, Any, Tuple
 
+API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+MODEL_NAME = "gemini-2.0-flash-lite"
 
-# -------------------------
-# SYSTEM PROMPT
-# -------------------------
+
 SYSTEM_PROMPT = """
 Extract bill line items EXACTLY as required.
-
 Output ONLY JSON.
 
 JSON FORMAT:
@@ -31,50 +30,43 @@ RULES:
 - No totals, tax, discounts.
 - Only extract line items.
 - No rounding item_amount.
-- If Qty or Rate missing -> 0.0
-- page_type must exactly match.
+- Missing Qty/Rate → 0.0
+- page_type must match exactly.
 """
-# -------------------------
 
 
-def get_api_key():
-    return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+def enforce_constraints(data: Dict[str, Any]):
+
+    if data.get("page_type") not in ["Bill Detail", "Final Bill", "Pharmacy"]:
+        data["page_type"] = "Bill Detail"
+
+    final_items = []
+    for item in data.get("bill_items", []):
+        final_items.append({
+            "item_name": item.get("item_name", ""),
+            "item_amount": float(item.get("item_amount") or 0.0),
+            "item_rate": float(item.get("item_rate") or 0.0),
+            "item_quantity": float(item.get("item_quantity") or 0.0),
+        })
+
+    data["bill_items"] = final_items
+    return data
 
 
-def enforce_constraints(page_data: Dict[str, Any]) -> Dict[str, Any]:
-    # Fix page_type
-    valid = ["Bill Detail", "Final Bill", "Pharmacy"]
-    if page_data.get("page_type") not in valid:
-        page_data["page_type"] = "Bill Detail"
+async def extract_page_items_with_llm(img_bytes: bytes, page_no: int) -> Tuple[Dict[str, Any], Dict[str, int]]:
 
-    # Fix bill items
-    for item in page_data.get("bill_items", []):
-        item["item_name"] = item.get("item_name", "")
-        item["item_rate"] = float(item.get("item_rate") or 0.0)
-        item["item_quantity"] = float(item.get("item_quantity") or 0.0)
-        item["item_amount"] = float(item.get("item_amount") or 0.0)
-
-    return page_data
-
-
-async def extract_page_items_with_llm(input_bytes: bytes, page_no: str, mime="image/png"):
-
-    api_key = get_api_key()
-    if not api_key:
-        raise ValueError("Missing GEMINI_API_KEY")
+    img_b64 = base64.b64encode(img_bytes).decode()
 
     url = (
-        "https://generativelanguage.googleapis.com/v1beta/"
-        f"models/gemini-flash-latest:generateContent?key={api_key}"
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{MODEL_NAME}:generateContent?key={API_KEY}"
     )
-
-    img64 = base64.b64encode(input_bytes).decode("utf-8")
 
     payload = {
         "contents": [{
             "parts": [
                 {"text": SYSTEM_PROMPT},
-                {"inline_data": {"mime_type": mime, "data": img64}}
+                {"inline_data": {"mime_type": "image/png", "data": img_b64}}
             ]
         }],
         "generationConfig": {
@@ -83,38 +75,28 @@ async def extract_page_items_with_llm(input_bytes: bytes, page_no: str, mime="im
         }
     }
 
-    print(f"[GEMINI] Processing page {page_no}...")
+    print(f"[GEMINI] Calling {MODEL_NAME} for page {page_no}...")
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(url, json=payload)
-        resp.raise_for_status()
+    async with httpx.AsyncClient(timeout=90) as client:
+        r = await client.post(url, json=payload)
+        r.raise_for_status()
 
-    result = resp.json()
-    raw = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+    result = r.json()
+    txt = result["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-    # Clean JSON
-    if raw.startswith("```"):
-        raw = raw.replace("```json", "").replace("```", "").strip()
+    if txt.startswith("```"):
+        txt = txt.replace("```json", "").replace("```", "").strip()
 
-    try:
-        data = json.loads(raw)
-    except Exception:
-        print("[ERROR] Gemini returned invalid JSON:", raw)
-        data = {"page_type": "Bill Detail", "bill_items": []}
-
-    # If list returned → wrap
-    if isinstance(data, list):
-        data = {"page_type": "Bill Detail", "bill_items": data}
-
+    data = json.loads(txt)
     data["page_no"] = str(page_no)
 
     data = enforce_constraints(data)
 
     usage = result.get("usageMetadata", {})
-    usage_dict = {
+    token_usage = {
         "total_tokens": usage.get("totalTokenCount", 0),
         "input_tokens": usage.get("promptTokenCount", 0),
-        "output_tokens": usage.get("candidatesTokenCount", 0),
+        "output_tokens": usage.get("candidatesTokenCount", 0)
     }
 
-    return data, usage_dict
+    return data, token_usage
