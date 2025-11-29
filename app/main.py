@@ -1,30 +1,10 @@
+import asyncio
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from app.ocr_pipeline import prepare_pages
 from app.llm_client import extract_page_items_with_llm
+from app.schemas import *
 
-
-class InputBody(BaseModel):
-    document: str
-
-
-from app.schemas import (
-    SuccessResponse,
-    ErrorResponse,
-    TokenUsage,
-    DataPayload,
-    PageLineItems,
-    BillItem,
-)
-
-
-app = FastAPI(
-    title="Bill Extraction API",
-    docs_url=None,
-    redoc_url=None,
-    openapi_url=None
-)
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
 @app.post("/extract-bill-data")
@@ -32,12 +12,18 @@ async def extract_bill_data(body: InputBody):
     try:
         pages = await prepare_pages(body.document)
 
+        # Create parallel tasks for each page → Gemini
+        tasks = [
+            extract_page_items_with_llm(img_bytes, page_no, mime)
+            for page_no, (img_bytes, mime) in pages
+        ]
+
+        results = await asyncio.gather(*tasks)
+
         page_items = []
-        total_tokens = inp = out = 0
+        total_tok = inp = out = 0
 
-        for page_no, (img_bytes, mime) in pages:
-            extracted, usage = extract_page_items_with_llm(img_bytes, page_no, mime)
-
+        for (extracted, usage) in results:
             items = [
                 BillItem(
                     item_name=i["item_name"],
@@ -48,22 +34,24 @@ async def extract_bill_data(body: InputBody):
                 for i in extracted.get("bill_items", [])
             ]
 
-            page_items.append(PageLineItems(
-                page_no=str(page_no),
-                page_type=extracted["page_type"],
-                bill_items=items
-            ))
+            page_items.append(
+                PageLineItems(
+                    page_no=extracted["page_no"],
+                    page_type=extracted["page_type"],
+                    bill_items=items
+                )
+            )
 
-            total_tokens += usage["total_tokens"]
+            total_tok += usage["total_tokens"]
             inp += usage["input_tokens"]
             out += usage["output_tokens"]
 
         return SuccessResponse(
             is_success=True,
             token_usage=TokenUsage(
-                total_tokens=total_tokens,
+                total_tokens=total_tok,
                 input_tokens=inp,
-                output_tokens=out,
+                output_tokens=out
             ),
             data=DataPayload(
                 pagewise_line_items=page_items,
@@ -72,7 +60,4 @@ async def extract_bill_data(body: InputBody):
         )
 
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content=ErrorResponse(is_success=False, message=str(e)).dict()
-        )
+        return {"error": str(e)}
