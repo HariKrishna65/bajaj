@@ -1,39 +1,27 @@
+import asyncio
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-
+from app.schemas import InputBody, SuccessResponse, DataPayload, PageLineItems, BillItem, TokenUsage
 from app.ocr_pipeline import prepare_pages
 from app.llm_client import extract_page_items_with_llm
 
-from app.schemas import (
-    SuccessResponse, ErrorResponse, TokenUsage,
-    DataPayload, PageLineItems, BillItem
-)
+app = FastAPI()
+
+# Global lock → ensures ONE document is processed at a time
+PROCESS_LOCK = asyncio.Lock()
 
 
-class InputBody(BaseModel):
-    document: str   # PDF/IMAGE URL
-
-
-app = FastAPI(
-    title="Bill Extraction API",
-    openapi_url=None,
-    docs_url=None,
-    redoc_url=None
-)
-
-
-@app.post("/extract-bill-data")
+@app.post("/extract-bill-data", response_model=SuccessResponse)
 async def extract_bill_data(body: InputBody):
 
-    try:
+    async with PROCESS_LOCK:
         pages = await prepare_pages(body.document)
 
-        pagewise = []
-        total = inp = out = 0
+        page_items = []
+        total_tokens = input_tokens = output_tokens = 0
 
-        for page_no, (img_bytes, mime) in pages:
-            extracted, usage = await extract_page_items_with_llm(img_bytes, page_no, mime)
+        # Process pages sequentially
+        for page_no, img_bytes, mime in pages:
+            extracted, usage = await extract_page_items_with_llm(img_bytes, page_no)
 
             items = [
                 BillItem(
@@ -45,7 +33,7 @@ async def extract_bill_data(body: InputBody):
                 for i in extracted["bill_items"]
             ]
 
-            pagewise.append(
+            page_items.append(
                 PageLineItems(
                     page_no=str(page_no),
                     page_type=extracted["page_type"],
@@ -53,25 +41,19 @@ async def extract_bill_data(body: InputBody):
                 )
             )
 
-            total += usage["total_tokens"]
-            inp += usage["input_tokens"]
-            out += usage["output_tokens"]
+            total_tokens += usage["total_tokens"]
+            input_tokens += usage["input_tokens"]
+            output_tokens += usage["output_tokens"]
 
         return SuccessResponse(
             is_success=True,
             token_usage=TokenUsage(
-                total_tokens=total,
-                input_tokens=inp,
-                output_tokens=out
+                total_tokens=total_tokens,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens
             ),
             data=DataPayload(
-                pagewise_line_items=pagewise,
-                total_item_count=sum(len(p.bill_items) for p in pagewise)
+                pagewise_line_items=page_items,
+                total_item_count=sum(len(p.bill_items) for p in page_items)
             )
-        )
-
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content=ErrorResponse(is_success=False, message=str(e)).dict()
         )
