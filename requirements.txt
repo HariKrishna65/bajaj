@@ -7,15 +7,11 @@ pydantic==2.7.0
 typing-extensions==4.10.0
 python-multipart==0.0.9
 
-# PDF processing
 pdf2image==1.17.0
 Pillow==10.3.0
 
-# Gemini REST API compatible dependencies
-googleapis-common-protos==1.62.0
-protobuf==4.25.3
 google-auth==2.29.0
 google-auth-httplib2==0.2.0
 google-api-core==2.19.0
-
-# We DO NOT install google-generativeai   (not needed; causes wheel failures)
+googleapis-common-protos==1.62.0
+protobuf==4.25.3
