@@ -5,6 +5,7 @@ from typing import List, Tuple
 from pdf2image import convert_from_bytes
 from PIL import Image
 
+
 async def download_document(url: str) -> Tuple[bytes, str]:
     print(f"[URL DOWNLOAD] Fetching: {url}")
 
@@ -16,13 +17,12 @@ async def download_document(url: str) -> Tuple[bytes, str]:
         file_bytes = r.content
         mime = r.headers.get("content-type", "").split(";")[0]
 
-        # Try detect mime from URL if unknown
+        # Detect from URL if missing
         if not mime or mime == "application/octet-stream":
-            ext_mime, _ = mimetypes.guess_type(url)
-            if ext_mime:
-                mime = ext_mime
+            ext, _ = mimetypes.guess_type(url)
+            if ext:
+                mime = ext
 
-        # Fallback
         if not mime:
             mime = "application/pdf"
 
@@ -34,26 +34,38 @@ async def download_document(url: str) -> Tuple[bytes, str]:
 
 
 async def prepare_pages(url: str):
-    """Download PDF/image URL → Convert into list of images"""
+    """Download PDF/image URL → Convert into list of page images."""
     file_bytes, mime = await download_document(url)
     return process_uploaded_file(file_bytes, mime)
 
 
-def process_uploaded_file(file_bytes: bytes, mime: str) -> List[Tuple[str, Tuple[bytes, str]]]:
+def process_uploaded_file(file_bytes: bytes, mime: str) -> List[Tuple[int, Tuple[bytes, str]]]:
     pages = []
 
+    # ----------------------------------------------------
+    # PDF → JPEG conversion (optimized)
+    # ----------------------------------------------------
     if "pdf" in mime.lower():
-        print("[PDF] Converting PDF → images...")
-        imgs = convert_from_bytes(file_bytes, dpi=200)
+        print("[PDF] Converting PDF → images... (DPI=130 fast mode)")
+
+        # 🔥 Faster DPI (was 200 before)
+        imgs = convert_from_bytes(file_bytes, dpi=130)
 
         for idx, img in enumerate(imgs, start=1):
             buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            pages.append((str(idx), (buf.getvalue(), "image/png")))
 
+            # Convert PNG to JPEG to reduce size drastically
+            img = img.convert("RGB")
+            img.save(buf, format="JPEG", quality=90)
+
+            pages.append((idx, (buf.getvalue(), "image/jpeg")))
+
+    # ----------------------------------------------------
+    # Direct image supported
+    # ----------------------------------------------------
     elif "image" in mime.lower():
         print("[IMAGE] Single image detected.")
-        pages.append(("1", (file_bytes, mime)))
+        pages.append((1, (file_bytes, mime)))
 
     else:
         raise ValueError(f"Unsupported file type: {mime}")
