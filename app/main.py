@@ -1,5 +1,5 @@
 from fastapi import FastAPI, File, UploadFile, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from typing import Optional
 from pydantic import BaseModel
 
@@ -24,19 +24,299 @@ class URLRequest(BaseModel):
     document_url: str
 
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    """Health check endpoint - use this to verify API is running"""
-    return {
-        "status": "ok",
-        "message": "Bill Extraction API is running",
-        "endpoints": {
-            "extract_bill_data": "POST /extract-bill-data (Form-data)",
-            "extract_bill_data_json": "POST /extract-bill-data-json (JSON body)",
-            "health": "GET /health",
-            "docs": "GET /docs"
+    """Interactive form interface for bill extraction"""
+    html_content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bill Extraction API</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
-    }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 700px;
+            width: 100%;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .form-group {
+            margin-bottom: 25px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .description {
+            color: #666;
+            font-size: 12px;
+            margin-bottom: 8px;
+            font-weight: normal;
+        }
+        input[type="text"], input[type="file"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        input[type="file"] {
+            padding: 8px;
+            cursor: pointer;
+        }
+        .checkbox-group {
+            margin-top: 8px;
+            display: flex;
+            align-items: center;
+        }
+        .checkbox-group input[type="checkbox"] {
+            margin-right: 8px;
+            cursor: pointer;
+        }
+        .checkbox-group label {
+            margin: 0;
+            font-weight: normal;
+            font-size: 13px;
+            color: #666;
+            cursor: pointer;
+        }
+        .content-type {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            color: #666;
+        }
+        .content-type strong {
+            color: #333;
+        }
+        .execute-btn {
+            width: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .execute-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        .execute-btn:active {
+            transform: translateY(0);
+        }
+        .execute-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            margin-top: 20px;
+            color: #667eea;
+        }
+        .result {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 6px;
+            display: none;
+        }
+        .result pre {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 12px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .error {
+            background: #fee;
+            border: 1px solid #fcc;
+            color: #c00;
+        }
+        .success {
+            background: #efe;
+            border: 1px solid #cfc;
+        }
+        .info-links {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #e0e0e0;
+            text-align: center;
+        }
+        .info-links a {
+            color: #667eea;
+            text-decoration: none;
+            margin: 0 10px;
+            font-size: 13px;
+        }
+        .info-links a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📄 Bill Extraction API</h1>
+        <p class="subtitle">Extract bill line items from PDF or image documents using AI</p>
+        
+        <div class="content-type">
+            <strong>Content-Type:</strong> multipart/form-data
+        </div>
+        
+        <form id="extractForm" enctype="multipart/form-data">
+            <div class="form-group">
+                <label for="document_url">document_url</label>
+                <div class="description">URL to PDF or image (http/https)</div>
+                <input type="text" id="document_url" name="document_url" placeholder="https://example.com/bill.pdf">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="url_empty" name="url_empty">
+                    <label for="url_empty">Send empty value</label>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label for="document_file">document_file</label>
+                <div class="description">Upload PDF or image file directly</div>
+                <input type="file" id="document_file" name="document_file" accept=".pdf,.jpg,.jpeg,.png,.gif">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="file_empty" name="file_empty" checked>
+                    <label for="file_empty">Send empty value</label>
+                </div>
+            </div>
+            
+            <button type="submit" class="execute-btn" id="executeBtn">Execute</button>
+        </form>
+        
+        <div class="loading" id="loading">Processing your request...</div>
+        
+        <div class="result" id="result"></div>
+        
+        <div class="info-links">
+            <a href="/docs">API Documentation</a>
+            <a href="/health">Health Check</a>
+        </div>
+    </div>
+    
+    <script>
+        const form = document.getElementById('extractForm');
+        const executeBtn = document.getElementById('executeBtn');
+        const loading = document.getElementById('loading');
+        const result = document.getElementById('result');
+        
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            executeBtn.disabled = true;
+            loading.style.display = 'block';
+            result.style.display = 'none';
+            
+            const formData = new FormData();
+            
+            // Handle document_url
+            const urlInput = document.getElementById('document_url');
+            const urlEmpty = document.getElementById('url_empty').checked;
+            if (!urlEmpty && urlInput.value.trim()) {
+                formData.append('document_url', urlInput.value.trim());
+            }
+            
+            // Handle document_file
+            const fileInput = document.getElementById('document_file');
+            const fileEmpty = document.getElementById('file_empty').checked;
+            if (!fileEmpty && fileInput.files.length > 0) {
+                formData.append('document_file', fileInput.files[0]);
+            }
+            
+            try {
+                const response = await fetch('/extract-bill-data', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                loading.style.display = 'none';
+                result.style.display = 'block';
+                
+                if (response.ok) {
+                    result.className = 'result success';
+                    result.innerHTML = '<h3>✓ Success</h3><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+                } else {
+                    result.className = 'result error';
+                    result.innerHTML = '<h3>✗ Error (' + response.status + ')</h3><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+                }
+            } catch (error) {
+                loading.style.display = 'none';
+                result.style.display = 'block';
+                result.className = 'result error';
+                result.innerHTML = '<h3>✗ Error</h3><pre>' + error.message + '</pre>';
+            } finally {
+                executeBtn.disabled = false;
+            }
+        });
+        
+        // Auto-uncheck file empty when file is selected
+        document.getElementById('document_file').addEventListener('change', function(e) {
+            if (e.target.files.length > 0) {
+                document.getElementById('file_empty').checked = false;
+            }
+        });
+        
+        // Auto-uncheck url empty when URL is entered
+        document.getElementById('document_url').addEventListener('input', function(e) {
+            if (e.target.value.trim()) {
+                document.getElementById('url_empty').checked = false;
+            }
+        });
+    </script>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html_content)
 
 
 @app.get("/health")
