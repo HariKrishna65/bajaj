@@ -37,31 +37,34 @@ async def extract_bill_data(
     - Local image file uploads (jpg, png, etc.)
     """
     try:
-        # Validate that exactly one input is provided
-        if not document_url and not document_file:
+        # Validate input: if file is uploaded, document_url must be null/empty
+        if document_file:
+            # When file is uploaded, ensure document_url is null/empty
+            if document_url and str(document_url).strip():
+                return JSONResponse(
+                    status_code=400,
+                    content=ErrorResponse(
+                        is_success=False,
+                        message="When uploading a file, 'document_url' must be empty/null. Please remove document_url or use URL input only."
+                    ).dict()
+                )
+        elif not document_url or not str(document_url).strip():
+            # No file and no valid URL
             return JSONResponse(
                 status_code=400,
                 content=ErrorResponse(
                     is_success=False,
-                    message="Please provide either 'document_url' or 'document_file'"
-                ).dict()
-            )
-        
-        if document_url and document_file:
-            return JSONResponse(
-                status_code=400,
-                content=ErrorResponse(
-                    is_success=False,
-                    message="Please provide either 'document_url' OR 'document_file', not both"
+                    message="Please provide either 'document_url' (non-empty) or 'document_file', but not both"
                 ).dict()
             )
         
         # Get document content based on input type
-        if document_url:
+        if document_url and str(document_url).strip():
             # Handle URL input - pass URL directly to Gemini
-            pages = await prepare_pages(document_url)
+            pages = await prepare_pages(str(document_url))
         else:
-            # Handle file upload - pass file bytes directly to Gemini
+            # Handle file upload - process all pages for PDFs
+            from app.ocr_pipeline import process_uploaded_file
             file_bytes = await document_file.read()
             # Detect MIME type
             import mimetypes
@@ -71,9 +74,8 @@ async def extract_bill_data(
                 if detected_mime:
                     mime = detected_mime
             
-            # Return file bytes with MIME type as tuple
-            # Format: [(page_no, (image_bytes, mime))]
-            pages = [("1", (file_bytes, mime))]
+            # Process file - converts PDF to all pages or single image
+            pages = process_uploaded_file(file_bytes, mime)
 
         pagewise_line_items = []
         total_tokens = 0
