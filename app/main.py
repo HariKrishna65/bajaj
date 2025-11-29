@@ -2,7 +2,7 @@ from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 from typing import Optional
 
-from schemas import (
+from app.schemas import (
     SuccessResponse,
     ErrorResponse,
     TokenUsage,
@@ -11,8 +11,9 @@ from schemas import (
     BillItem,
 )
 
-from ocr_pipeline import prepare_pages, process_uploaded_file
-from llm_client import extract_page_items_with_llm
+from app.ocr_pipeline import prepare_pages, process_uploaded_file
+from app.llm_client import extract_page_items_with_llm
+
 
 app = FastAPI(
     title="Bill Extraction API",
