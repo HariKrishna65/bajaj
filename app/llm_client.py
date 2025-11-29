@@ -5,25 +5,22 @@ import httpx
 from typing import Dict, Any, Tuple
 
 
-# -------------------------------------------------------
-# Load API Key
-# -------------------------------------------------------
 def get_api_key():
     return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 
-# -------------------------------------------------------
-# System Prompt (minimal + fast)
-# -------------------------------------------------------
 SYSTEM_PROMPT = """
-Extract ONLY bill line items in strict JSON:
+Extract only BILL LINE ITEMS from the provided page.
 
+Return ONLY JSON.
+
+FORMAT:
 {
-  "page_no": "",
+  "page_no": "string",
   "page_type": "Bill Detail | Final Bill | Pharmacy",
   "bill_items": [
     {
-      "item_name": "",
+      "item_name": "string",
       "item_amount": float,
       "item_rate": float,
       "item_quantity": float
@@ -31,55 +28,67 @@ Extract ONLY bill line items in strict JSON:
   ]
 }
 
-Rules:
-- Only real line items.
-- No totals, no GST, no discounts, no summary.
-- item_amount must be EXACT.
-- If qty or rate missing → 0.0
-- page_type must match allowed values.
+RULES:
+- Extract ONLY true line items in the bill table.
+- Do NOT include totals, GST, discounts, summary, headings.
+- item_amount must be EXACT (no rounding).
+- If a value is missing → 0.0
+- If page has no bill table → return bill_items: []
+- page_type must match valid values.
 """
 
 
-# -------------------------------------------------------
-# Cleanup extracted data
-# -------------------------------------------------------
 def enforce_constraints(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Clean & validate extracted JSON"""
     valid_types = ["Bill Detail", "Final Bill", "Pharmacy"]
 
     # Fix page_type
     if data.get("page_type") not in valid_types:
         data["page_type"] = "Bill Detail"
 
-    fixed_items = []
-    for item in data.get("bill_items", []):
-        fixed_items.append({
-            "item_name": item.get("item_name", "") or "",
+    items = data.get("bill_items", [])
+
+    # ❌ Case 1: Page has no valid items → return empty list
+    if items is None or items == []:
+        data["bill_items"] = []
+        return data
+
+    # ❌ Case 2: Model returned a single empty row → remove it
+    if len(items) == 1 and not items[0].get("item_name"):
+        data["bill_items"] = []
+        return data
+
+    cleaned = []
+
+    for item in items:
+        name = item.get("item_name", "").strip()
+
+        # Skip blank rows
+        if name == "":
+            continue
+
+        cleaned.append({
+            "item_name": name,
             "item_amount": float(item.get("item_amount") or 0.0),
             "item_rate": float(item.get("item_rate") or 0.0),
-            "item_quantity": float(item.get("item_quantity") or 0.0),
+            "item_quantity": float(item.get("item_quantity") or 0.0)
         })
 
-    data["bill_items"] = fixed_items
+    data["bill_items"] = cleaned
     return data
 
 
-# -------------------------------------------------------
-# Main LLM Extraction Function
-# -------------------------------------------------------
 def extract_page_items_with_llm(img_bytes: bytes, page_no: int) -> Tuple[Dict[str, Any], Dict[str, int]]:
+    """Call Gemini Flash Latest for extraction"""
     api_key = get_api_key()
     if not api_key:
         raise ValueError("Missing GEMINI_API_KEY")
 
-    # Fastest Gemini model
-    model = "gemini-2.0-flash-lite"
-
+    model = "gemini-flash-latest"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
-    # Encode PNG
     img64 = base64.b64encode(img_bytes).decode()
 
-    # LLM Payload
     payload = {
         "contents": [{
             "parts": [
@@ -93,43 +102,35 @@ def extract_page_items_with_llm(img_bytes: bytes, page_no: int) -> Tuple[Dict[st
         }
     }
 
-    print(f"[GEMINI FAST] Processing Page {page_no} via {model}")
+    print(f"[GEMINI] Page {page_no} → {model}")
 
-    # Call Gemini
-    with httpx.Client(timeout=40) as client:
+    with httpx.Client(timeout=60) as client:
         r = client.post(url, json=payload)
         r.raise_for_status()
 
     result = r.json()
+    raw = result["candidates"][0]["content"]["parts"][0]["text"]
 
-    # Extract JSON text from Gemini
-    text = result["candidates"][0]["content"]["parts"][0]["text"]
-    text = text.strip().replace("```json", "").replace("```", "").strip()
+    # Remove ```json formatting
+    txt = raw.replace("```json", "").replace("```", "").strip()
+    parsed = json.loads(txt)
 
-    # Parse JSON
-    data = json.loads(text)
-
-    # ---------------------------------------------------
-    # FIX: If model returns a list, auto-wrap to object
-    # ---------------------------------------------------
-    if isinstance(data, list):
-        data = {
+    # If model returns a list → auto-wrap
+    if isinstance(parsed, list):
+        parsed = {
             "page_no": str(page_no),
             "page_type": "Bill Detail",
-            "bill_items": data
+            "bill_items": parsed
         }
     else:
-        data["page_no"] = str(page_no)
+        parsed["page_no"] = str(page_no)
 
-    # Apply sanitization rules
-    data = enforce_constraints(data)
+    # Apply safe cleanup
+    parsed = enforce_constraints(parsed)
 
-    # Token usage
     usage = result.get("usageMetadata", {})
-    token_usage = {
+    return parsed, {
         "total_tokens": usage.get("totalTokenCount", 0),
         "input_tokens": usage.get("promptTokenCount", 0),
         "output_tokens": usage.get("candidatesTokenCount", 0),
     }
-
-    return data, token_usage
