@@ -37,10 +37,19 @@ async def extract_bill_data(
     - Local image file uploads (jpg, png, etc.)
     """
     try:
+        print("=" * 80)
+        print("[REQUEST RECEIVED] New bill extraction request received")
+        print("=" * 80)
+        
         # Validate input: if file is uploaded, document_url must be null/empty
         if document_file:
+            print(f"[INPUT TYPE] File upload detected")
+            print(f"[FILE INFO] Filename: {document_file.filename}")
+            print(f"[FILE INFO] Content-Type: {document_file.content_type}")
+            
             # When file is uploaded, ensure document_url is null/empty
             if document_url and str(document_url).strip():
+                print(f"[ERROR] document_url provided: {document_url[:100]}... (should be empty when file uploaded)")
                 return JSONResponse(
                     status_code=400,
                     content=ErrorResponse(
@@ -48,8 +57,10 @@ async def extract_bill_data(
                         message="When uploading a file, 'document_url' must be empty/null. Please remove document_url or use URL input only."
                     ).dict()
                 )
+            print(f"[VALIDATION] document_url is empty/null (correct)")
         elif not document_url or not str(document_url).strip():
             # No file and no valid URL
+            print(f"[ERROR] No valid input provided - both document_url and document_file are missing/empty")
             return JSONResponse(
                 status_code=400,
                 content=ErrorResponse(
@@ -61,11 +72,18 @@ async def extract_bill_data(
         # Get document content based on input type
         if document_url and str(document_url).strip():
             # Handle URL input - pass URL directly to Gemini
+            print(f"[INPUT TYPE] URL input detected")
+            print(f"[URL] {document_url[:200]}{'...' if len(document_url) > 200 else ''}")
             pages = await prepare_pages(str(document_url))
+            print(f"[PAGES] Processing {len(pages)} page(s) from URL")
         else:
             # Handle file upload - process all pages for PDFs
+            print(f"[PROCESSING] Reading uploaded file...")
             from app.ocr_pipeline import process_uploaded_file
             file_bytes = await document_file.read()
+            file_size_mb = len(file_bytes) / (1024 * 1024)
+            print(f"[FILE INFO] File size: {file_size_mb:.2f} MB ({len(file_bytes)} bytes)")
+            
             # Detect MIME type
             import mimetypes
             mime = document_file.content_type or "application/pdf"
@@ -73,29 +91,43 @@ async def extract_bill_data(
                 detected_mime, _ = mimetypes.guess_type(document_file.filename or "")
                 if detected_mime:
                     mime = detected_mime
+                    print(f"[FILE INFO] Detected MIME type: {mime} (from filename)")
+            
+            print(f"[FILE INFO] MIME type: {mime}")
             
             # Process file - converts PDF to all pages or single image
+            print(f"[PROCESSING] Processing file (converting PDF pages or preparing image)...")
             pages = process_uploaded_file(file_bytes, mime)
+            print(f"[PAGES] Found {len(pages)} page(s) to process")
+        
+        print("-" * 80)
 
         pagewise_line_items = []
         total_tokens = 0
         input_tokens = 0
         output_tokens = 0
 
-        for page_no, page_data in pages:
+        print(f"[PROCESSING] Starting extraction for {len(pages)} page(s)...")
+        for idx, (page_no, page_data) in enumerate(pages, 1):
+            print(f"[PAGE {idx}/{len(pages)}] Processing page {page_no}...")
             # page_data can be either URL (str) or image_bytes (bytes)
             # For URLs, page_data is a string. For file uploads, it's (image_bytes, mime) tuple
             if isinstance(page_data, tuple):
                 # File upload: (image_bytes, mime)
                 image_bytes, mime = page_data
+                print(f"[PAGE {idx}/{len(pages)}] Sending image bytes ({len(image_bytes)} bytes) to Gemini AI...")
                 page_extracted, usage = extract_page_items_with_llm(
                     image_bytes, page_no, mime
                 )
             else:
                 # URL: page_data is a string
+                print(f"[PAGE {idx}/{len(pages)}] Sending URL to Gemini AI...")
                 page_extracted, usage = extract_page_items_with_llm(
                     page_data, page_no
                 )
+            
+            item_count = len(page_extracted.get("bill_items", []))
+            print(f"[PAGE {idx}/{len(pages)}] Extracted {item_count} bill item(s) from page {page_no}")
 
             page_items = [
                 BillItem(
@@ -121,6 +153,13 @@ async def extract_bill_data(
 
         total_item_count = sum(len(p.bill_items) for p in pagewise_line_items)
 
+        print("-" * 80)
+        print(f"[COMPLETED] Processing finished successfully!")
+        print(f"[RESULTS] Total pages processed: {len(pagewise_line_items)}")
+        print(f"[RESULTS] Total items extracted: {total_item_count}")
+        print(f"[RESULTS] Total tokens used: {total_tokens} (input: {input_tokens}, output: {output_tokens})")
+        print("=" * 80)
+
         return SuccessResponse(
             is_success=True,
             token_usage=TokenUsage(
@@ -135,6 +174,12 @@ async def extract_bill_data(
         )
 
     except Exception as e:
+        print("-" * 80)
+        print(f"[ERROR] Exception occurred: {str(e)}")
+        print(f"[ERROR] Type: {type(e).__name__}")
+        import traceback
+        print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
+        print("=" * 80)
         return JSONResponse(
             status_code=500,
             content=ErrorResponse(is_success=False, message=str(e)).dict()

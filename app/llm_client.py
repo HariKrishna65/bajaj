@@ -211,13 +211,18 @@ def extract_page_items_with_llm(
     
     # Try each model until one works
     last_error = None
-    for model_name in model_names:
+    input_type = "URL" if isinstance(input_data, str) else f"Image ({mime})"
+    print(f"[GEMINI API] Calling Gemini API for page {page_no} (Input: {input_type})...")
+    
+    for model_idx, model_name in enumerate(model_names, 1):
         try:
+            print(f"[GEMINI API] Trying model {model_idx}/{len(model_names)}: {model_name}...")
             url = url_template.format(model=model_name, key=api_key)
             with httpx.Client(timeout=60.0) as client:
                 response = client.post(url, json=payload)
                 
                 if response.status_code == 200:
+                    print(f"[GEMINI API] ✓ Success with model: {model_name}")
                     result = response.json()
                     if 'candidates' in result and len(result['candidates']) > 0:
                         content = result['candidates'][0]['content']['parts'][0]['text']
@@ -231,6 +236,7 @@ def extract_page_items_with_llm(
                         page_data["page_no"] = str(page_no)
                         
                         # Enforce constraints on the extracted data
+                        print(f"[GEMINI API] Applying extraction constraints...")
                         page_data = enforce_extraction_constraints(page_data)
                         
                         # Extract usage info if available
@@ -241,19 +247,25 @@ def extract_page_items_with_llm(
                             "output_tokens": usage_info.get('candidatesTokenCount', 0)
                         }
                         
+                        print(f"[GEMINI API] Token usage - Total: {usage['total_tokens']}, Input: {usage['input_tokens']}, Output: {usage['output_tokens']}")
                         return page_data, usage
                 elif response.status_code == 404:
                     # Model not found, try next one
+                    print(f"[GEMINI API] ✗ Model {model_name} not found (404), trying next...")
                     continue
                 else:
                     error_text = response.text[:300] if hasattr(response, 'text') else str(response.content[:300])
                     last_error = f"{model_name}: API error ({response.status_code}) - {error_text}"
+                    print(f"[GEMINI API] ✗ Error with model {model_name}: {error_text[:100]}...")
                     continue
         except json.JSONDecodeError as e:
             last_error = f"{model_name}: JSON decode error - {str(e)}"
+            print(f"[GEMINI API] ✗ JSON decode error with {model_name}: {str(e)[:100]}...")
             continue
         except Exception as e:
             last_error = f"{model_name}: Exception - {str(e)[:200]}"
+            print(f"[GEMINI API] ✗ Exception with {model_name}: {str(e)[:100]}...")
             continue
     
+    print(f"[GEMINI API] ✗ Failed with all models. Last error: {last_error}")
     raise ValueError(f"Could not process with any model. Last error: {last_error}")
