@@ -10,16 +10,15 @@ def get_api_key():
 
 
 SYSTEM_PROMPT = """
-Extract bill line items EXACTLY as required.
+Extract bill line items ONLY.
 
-Output ONLY JSON.
-
+Output strict JSON:
 {
-  "page_no": "string",
+  "page_no": "",
   "page_type": "Bill Detail | Final Bill | Pharmacy",
   "bill_items": [
     {
-      "item_name": "string",
+      "item_name": "",
       "item_amount": float,
       "item_rate": float,
       "item_quantity": float
@@ -28,26 +27,30 @@ Output ONLY JSON.
 }
 
 Rules:
-- Extract ONLY real line items.
-- Do NOT extract totals, discounts, GST, or summary values.
-- item_amount must be EXACT (no rounding).
-- If qty/rate missing → 0.0
-- page_type must exactly match valid values.
+- Only real line items.
+- No totals/tax/discounts.
+- If qty or rate missing → 0.0.
+- Amount must be exact.
 """
 
 
 def enforce_constraints(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize output."""
     valid = ["Bill Detail", "Final Bill", "Pharmacy"]
 
     if data.get("page_type") not in valid:
         data["page_type"] = "Bill Detail"
 
+    fixed = []
     for item in data.get("bill_items", []):
-        item["item_name"] = item.get("item_name", "")
-        item["item_amount"] = float(item.get("item_amount") or 0.0)
-        item["item_rate"] = float(item.get("item_rate") or 0.0)
-        item["item_quantity"] = float(item.get("item_quantity") or 0.0)
+        fixed.append({
+            "item_name": item.get("item_name", "") or "",
+            "item_amount": float(item.get("item_amount") or 0.0),
+            "item_rate": float(item.get("item_rate") or 0.0),
+            "item_quantity": float(item.get("item_quantity") or 0.0),
+        })
 
+    data["bill_items"] = fixed
     return data
 
 
@@ -56,7 +59,10 @@ def extract_page_items_with_llm(img_bytes: bytes, page_no: int) -> Tuple[Dict[st
     if not api_key:
         raise ValueError("Missing GEMINI_API_KEY")
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={api_key}"
+    # FASTEST MODEL
+    model = "gemini-2.0-flash-lite"
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
     img64 = base64.b64encode(img_bytes).decode()
 
@@ -67,29 +73,31 @@ def extract_page_items_with_llm(img_bytes: bytes, page_no: int) -> Tuple[Dict[st
                 {"inline_data": {"mime_type": "image/png", "data": img64}}
             ]
         }],
-        "generationConfig": {"temperature": 0.1, "response_mime_type": "application/json"}
+        "generationConfig": {
+            "temperature": 0.1,
+            "response_mime_type": "application/json"
+        }
     }
 
-    print(f"[GEMINI] Page {page_no} → Sending...")
+    print(f"[GEMINI FAST] Page {page_no} → {model}")
 
-    with httpx.Client(timeout=90) as client:
+    with httpx.Client(timeout=40) as client:  # faster timeout
         r = client.post(url, json=payload)
         r.raise_for_status()
 
     result = r.json()
-    raw = result["candidates"][0]["content"]["parts"][0]["text"]
+    txt = result["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-    txt = raw.strip().replace("```json", "").replace("```", "")
+    # Clean JSON
+    txt = txt.replace("```json", "").replace("```", "").strip()
     data = json.loads(txt)
-    data["page_no"] = str(page_no)
 
+    data["page_no"] = str(page_no)
     data = enforce_constraints(data)
 
-    usage_meta = result.get("usageMetadata", {})
-    usage = {
-        "total_tokens": usage_meta.get("totalTokenCount", 0),
-        "input_tokens": usage_meta.get("promptTokenCount", 0),
-        "output_tokens": usage_meta.get("candidatesTokenCount", 0),
+    usage = result.get("usageMetadata", {})
+    return data, {
+        "total_tokens": usage.get("totalTokenCount", 0),
+        "input_tokens": usage.get("promptTokenCount", 0),
+        "output_tokens": usage.get("candidatesTokenCount", 0)
     }
-
-    return data, usage
