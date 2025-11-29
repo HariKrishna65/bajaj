@@ -1,20 +1,72 @@
 import io
 import mimetypes
+import httpx
 from typing import List, Tuple
 from pdf2image import convert_from_bytes
 from PIL import Image
 
+async def download_document(url: str) -> Tuple[bytes, str]:
+    """
+    Download document from URL and return (file_bytes, mime_type).
+    """
+    print(f"[URL DOWNLOAD] Downloading document from URL...")
+    print(f"[URL DOWNLOAD] URL: {url[:200]}{'...' if len(url) > 200 else ''}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            
+            file_bytes = response.content
+            file_size_mb = len(file_bytes) / (1024 * 1024)
+            print(f"[URL DOWNLOAD] Downloaded successfully - {file_size_mb:.2f} MB ({len(file_bytes)} bytes)")
+            
+            # Detect MIME type from Content-Type header or URL
+            mime = response.headers.get("content-type", "").split(";")[0].strip()
+            if not mime or mime == "application/octet-stream":
+                # Try to detect from URL extension
+                detected_mime, _ = mimetypes.guess_type(url)
+                if detected_mime:
+                    mime = detected_mime
+                    print(f"[URL DOWNLOAD] Detected MIME type from URL: {mime}")
+                else:
+                    # Default based on content
+                    if file_bytes.startswith(b'%PDF'):
+                        mime = "application/pdf"
+                    elif file_bytes.startswith(b'\x89PNG'):
+                        mime = "image/png"
+                    elif file_bytes.startswith(b'\xff\xd8\xff'):
+                        mime = "image/jpeg"
+                    else:
+                        mime = "application/pdf"  # Default
+                    print(f"[URL DOWNLOAD] Detected MIME type from content: {mime}")
+            else:
+                print(f"[URL DOWNLOAD] MIME type from header: {mime}")
+            
+            return file_bytes, mime
+    except httpx.HTTPError as e:
+        print(f"[ERROR] Failed to download URL: {str(e)}")
+        raise ValueError(f"Failed to download document from URL: {str(e)}")
+    except Exception as e:
+        print(f"[ERROR] Unexpected error downloading URL: {str(e)}")
+        raise ValueError(f"Failed to download document from URL: {str(e)}")
+
+
 async def prepare_pages(document_url: str):
     """
-    For URL inputs, we pass the URL directly to Gemini.
-    This avoids downloading/processing PDFs when using URLs.
+    Download document from URL and process it the same way as file uploads.
+    This ensures consistent processing for both URLs and file uploads.
     """
-    print(f"[URL PROCESSING] Preparing URL input for processing")
-    print(f"[URL PROCESSING] URL: {document_url[:200]}{'...' if len(document_url) > 200 else ''}")
-    # Return in same structure: (page_no, data)
-    # Note: For URLs, we let Gemini handle multi-page PDFs
-    print(f"[URL PROCESSING] URL prepared - Gemini will handle PDF pages automatically")
-    return [("1", document_url)]
+    print(f"[URL PROCESSING] Processing URL input (downloading and processing like file upload)...")
+    
+    # Download the document from URL
+    file_bytes, mime = await download_document(document_url)
+    
+    # Process it the same way as file uploads
+    pages = process_uploaded_file(file_bytes, mime)
+    
+    print(f"[URL PROCESSING] URL processed - {len(pages)} page(s) ready")
+    return pages
 
 
 def process_uploaded_file(file_bytes: bytes, mime: str) -> List[Tuple[str, Tuple[bytes, str]]]:
