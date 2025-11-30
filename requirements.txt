@@ -9,3 +9,4 @@ python-multipart
 pdf2image
 pillow
 google-ai-generativelanguage
+numpy==1.26.4
