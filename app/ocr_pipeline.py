@@ -1,13 +1,10 @@
 import io
 import httpx
-import cv2
-import numpy as np
 from pdf2image import convert_from_bytes
+from PIL import Image, ImageEnhance, ImageFilter
+import numpy as np
 
 
-# ------------------------------
-# DOWNLOAD DOCUMENT (ASYNC)
-# ------------------------------
 async def download_document(url: str) -> bytes:
     print(f"[DOWNLOAD] {url}")
     async with httpx.AsyncClient(timeout=60) as client:
@@ -16,81 +13,61 @@ async def download_document(url: str) -> bytes:
         return r.content
 
 
-# ------------------------------
-# ENHANCE IMAGE FOR HANDWRITING
-# ------------------------------
-def enhance_image(img_bytes: bytes) -> bytes:
-    """Cleans yellow background, sharpens handwriting, improves contrast."""
+def enhance_image_pillow(img_bytes: bytes) -> bytes:
+    """Enhance PNG using Pillow (Render-compatible)."""
 
-    # Read PNG bytes → OpenCV image
-    np_arr = np.frombuffer(img_bytes, np.uint8)
-    img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-    # --- Guard: corrupted page ---
-    if img is None:
-        print("[WARNING] Could not decode image, returning original")
+    try:
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    except:
+        print("[WARNING] Pillow failed to load image — returning original")
         return img_bytes
 
-    # 1. Convert to grayscale
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # --- 1. Reduce yellow tint ---
+    r, g, b = img.split()
+    # Increase blue, reduce red → removes yellow
+    r = r.point(lambda p: p * 0.85)
+    g = g.point(lambda p: p * 0.95)
+    b = b.point(lambda p: min(255, p * 1.15))
+    img = Image.merge("RGB", (r, g, b))
 
-    # 2. Remove yellow background using adaptive threshold
-    thresh = cv2.adaptiveThreshold(
-        gray,
-        255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        35,
-        11
-    )
+    # --- 2. Increase contrast ---
+    img = ImageEnhance.Contrast(img).enhance(2.2)
 
-    # 3. Denoise handwriting strokes
-    den = cv2.fastNlMeansDenoising(thresh, h=35)
+    # --- 3. Increase sharpness for handwriting ---
+    img = ImageEnhance.Sharpness(img).enhance(2.5)
 
-    # 4. Sharpen handwriting edges
-    kernel = np.array([
-        [0, -1, 0],
-        [-1, 5, -1],
-        [0, -1, 0]
-    ])
-    sharp = cv2.filter2D(den, -1, kernel)
+    # --- 4. Small denoise ---
+    img = img.filter(ImageFilter.MedianFilter(size=3))
 
-    # Convert back to PNG
-    ok, out_png = cv2.imencode(".png", sharp)
-    if not ok:
-        print("[WARNING] Failed to encode enhanced PNG, returning raw image")
-        return img_bytes
-
-    return out_png.tobytes()
+    # Convert back to PNG bytes
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
 
 
-# ------------------------------
-# PREPARE PAGES (PDF → ENHANCED PNG)
-# ------------------------------
 async def prepare_pages(url: str):
-    """Downloads PDF → converts pages → enhances → returns list of (page_no, png_bytes)."""
+    """Download → Convert PDF → Enhance pages (NO opencv)."""
 
     file_bytes = await download_document(url)
 
     print("[PDF] Converting PDF → PNG @ 150 DPI")
+
     pages = convert_from_bytes(
         file_bytes,
         fmt="png",
         dpi=150
     )
 
-    out_pages = []
+    output = []
 
     for idx, page in enumerate(pages, start=1):
-        # Convert PIL → raw PNG bytes
         buf = io.BytesIO()
         page.save(buf, format="PNG")
         raw_png = buf.getvalue()
 
-        # Enhance for handwriting (yellow removal + sharpening)
-        cleaned_png = enhance_image(raw_png)
+        enhanced_png = enhance_image_pillow(raw_png)
 
-        out_pages.append((idx, cleaned_png))
+        output.append((idx, enhanced_png))
 
-    print(f"[PAGES] Ready after enhancement → {len(out_pages)} pages")
-    return out_pages
+    print(f"[PAGES] Ready: {len(output)} pages")
+    return output
